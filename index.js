@@ -1,384 +1,170 @@
 //////////////////////////////////////////////////////////////////////////////////////////
 //
-//      "Battle Crew" 
-//      Playstel Copyright (c) 2021
-//
-//////////////////////////////////////////////////////////////////////////////////////////
-//
-//      Purchase/Rent Items
+//  Reward
 //
 //////////////////////////////////////////////////////////////////////////////////////////
 
-handlers.GetItem = function(args) 
-{
-    GetItemPrice(args.Uses, args.CatalogVers, args.DisplayName, args.Currency);
+// defining these up top so we can easily change these later if we need to.
+var CHECK_IN_TRACKER = "CheckInTracker";    				// used as a key on the UserPublisherReadOnlyData
+var PROGRESSIVE_REWARD_TABLE = "ProgressiveRewardTable";	// TitleData key that contains the reward details
+var PROGRESSIVE_MIN_CREDITS = "MinStreak";					// PROGRESSIVE_REWARD_TABLE property denoting the minium number of logins to be eligible for this item 
+var PROGRESSIVE_REWARD = "Reward";							// PROGRESSIVE_REWARD_TABLE property denoting what item gets rewarded at this level
+var TRACKER_NEXT_GRANT = "NextEligibleGrant";				// CHECK_IN_TRACKER property containing the time at which we 
+var TRACKER_LOGIN_STREAK = "LoginStreak";					// CHECK_IN_TRACKER property containing the streak length
+
+
+handlers.CheckIn = function(args) {
+
+	var GetUserReadOnlyDataRequest = {
+        "PlayFabId": currentPlayerId,
+        "Keys": [ CHECK_IN_TRACKER ]
+    }; 
     
-    GetUserCurrency(args.Currency);
+    var GetUserReadOnlyDataResponse = server.GetUserReadOnlyData(GetUserReadOnlyDataRequest);
     
-    if(UserCurrency >= ItemPrice)
+    // need to ensure that our data field exists
+    var tracker = {}; // this would be the first login ever (across any title), so we have to make sure our record exists.
+        
+    if(GetUserReadOnlyDataResponse.Data.hasOwnProperty(CHECK_IN_TRACKER))
     {
-        SubstractItemPrice(args.Currency);
-        return CheckItemOwning(args.Uses, args.CatalogVers, args.DisplayName);
+    	//tracker = JSON.parse(GetUserReadOnlyDataResponse.Data[CHECK_IN_TRACKER].Value);
+    	tracker = GetUserReadOnlyDataResponse.Data[CHECK_IN_TRACKER].Value;
     }
     else
     {
-        return "Insufficient Funds";
+    	tracker = ResetTracker();
+  		
+  		// write back updated data to PlayFab
+  		UpdateTrackerData(tracker);
+
+    	return {"currentStreak":tracker[TRACKER_LOGIN_STREAK],"bonusIsReady":false,"bonusName":"Gold Medium","message":"This was your first login! " + Date.now(), 
+    	    "firstLoginBonus": true };
     }
-}
 
+    var values = tracker.split(';');
+    
+    var loginStreak = parseInt(values[0]);
+    var nextGrant = parseInt(values[1]);
 
-var ItemPrice;
+	if(Date.now() > nextGrant)
+	{	
+		// Eligible for an item grant.
+		//check to ensure that it has been less than 24 hours since the last grant window opened
+		var timeWindow = new Date(nextGrant);
+		timeWindow.setDate(timeWindow.getDate() + 1); // add 1 day 
 
-function GetItemPrice(Uses, Catalog, ItemId, Currency)
-{
-    var GetCatalogItemsResult = server.GetCatalogItems({ "CatalogVersion": Catalog });
+		if(Date.now() > timeWindow.getTime())
+		{
+			// streak ended :(			
+			tracker = ResetTracker();
+			//UpdateTrackerData(tracker);
+			
+		    UpdateTrackerData(tracker);
+
+            GrantItems("Gold Medium", "Support");
         
-    for(var catalogItem in GetCatalogItemsResult.Catalog)
+    	    return {"currentStreak":loginStreak,"bonusIsReady":false,"bonusName":"","message":"Your consecutive login streak has been broken. Login tomorrow to get a bonus! " + Date.now(), 
+    	    "firstLoginBonus": false };
+		}
+
+		// streak continues
+		loginStreak += 1;
+		
+        if(loginStreak > 7) loginStreak = 1;
+		
+		var dateObj = new Date(Date.now());
+		dateObj.setDate(dateObj.getDate() + 1); // add one day 
+		nextGrant = dateObj.getTime();
+
+		// write back updated data to PlayFab
+		log.info("Your consecutive login streak increased to: " + loginStreak);
+		//UpdateTrackerData(tracker);
+		
+		UpdateTrackerDataManual(loginStreak, nextGrant);
+		
+		return SetBonus(loginStreak);
+	}
+
+    return {"currentStreak":loginStreak,"bonusIsReady":false,"bonusName":"","message":"Bonus is not ready yet! " + Date.now(), 
+    	    "firstLoginBonus": false };
+};
+
+function SetBonus(Streak) {
+ 
+    var streak = parseInt(Streak);
+    
+    var bonusName = "Gold Small";
+    
+    if(streak > 7)
     {
-        var item = GetCatalogItemsResult.Catalog[catalogItem];
-            
-        if(item.ItemId == ItemId)
-        {
-            var instancePrice = item.VirtualCurrencyPrices[Currency];
-            ItemPrice = instancePrice * Uses;
-        }
+        GrantItems("Gold Medium", "Support");
+        return {"currentStreak":streak,"bonusIsReady":true,"bonusName":"Gold Medium","message":"Bonus is ready! " + Date.now(), 
+    	    "firstLoginBonus": false };
     }
-}
-
-var UserCurrency;
-function GetUserCurrency(Currency)
-{
-    var request = { "InfoRequestParameters": { "GetUserVirtualCurrency": true }, "PlayFabId": currentPlayerId };
-    UserCurrency = server.GetPlayerCombinedInfo(request).InfoResultPayload.UserVirtualCurrency[Currency];
-	return UserCurrency;
-}
-
-
-function SubstractItemPrice(Currency)
-{
-    server.SubtractUserVirtualCurrency({PlayFabId: currentPlayerId, 
-    VirtualCurrency: Currency, Amount: ItemPrice});
-}
-
-function CheckItemOwning(Uses, Catalog, DisplayName)
-{
-    var GetUserInventoryResult = server.GetUserInventory({ "PlayFabId": currentPlayerId });
-            
-    // Item already exist?
-    for(var index in GetUserInventoryResult.Inventory)
+    else
     {
-        var item = GetUserInventoryResult.Inventory[index];
-            
-        if(item.DisplayName == DisplayName)
-        {
-            var result = ModifyItemUses(Uses, item);
-            SetOwningStatus(Uses, item, Catalog);
-            return result;
-        }
+        GrantItems("Gold Small", "Support");
+        return {"currentStreak":streak,"bonusIsReady":true,"bonusName":"Gold Small","message":"Bonus is ready! " + Date.now(), 
+    	    "firstLoginBonus": false };
     }
     
-    // If item doesn't exist      
-    return GetNewItemInstance(Uses, Catalog, DisplayName);
+    return null;
 }
 
-function ModifyItemUses(Uses, Item)
+function ResetTracker()
 {
-    var ModifyItemUsesRequest = 
-    {
-        "UsesToAdd" : Uses,
-        "PlayFabId" : currentPlayerId,
-        "ItemInstanceId" : Item.ItemInstanceId
+	var dateObj = new Date(Date.now());
+	dateObj.setDate(dateObj.getDate() + 1); // add one day 
+	
+	return 0 + ";" + dateObj.getTime();
+}
+
+
+function UpdateTrackerData(data)
+{
+    var UpdateUserReadOnlyDataRequest = {
+        "PlayFabId": currentPlayerId,
+        "Data": {}
+    };
+    UpdateUserReadOnlyDataRequest.Data[CHECK_IN_TRACKER] = data;
+
+    server.UpdateUserReadOnlyData(UpdateUserReadOnlyDataRequest);
+}
+
+function UpdateTrackerDataManual(streak, newDate)
+{
+    var UpdateUserReadOnlyDataRequest = {
+        "PlayFabId": currentPlayerId,
+        "Data": {}
     };
     
-    return server.ModifyItemUses(ModifyItemUsesRequest);
-}
-
-function GrantItems(ItemId, Catalog)
-{
-    var GrantWeaponsToUserRequest = 
+    if(streak > 7)
     {
-        "CatalogVersion" : Catalog,
-        "PlayFabId" : currentPlayerId,
-        "ItemIds" : [ ItemId ]
-    };
-    
-    return server.GrantItemsToUser(GrantWeaponsToUserRequest);
-}
-
-var purchaseThreshold = 60;
-function SetOwningStatus(Uses, Item, Catalog)
-{
-    if(Catalog == "Look")
-    {
-        SetOwnerStatusCustomData("Purchased", Item);
-    }
-    
-    if(Catalog == "Stacks")
-    {
-        SetOwnerStatusCustomData("Rented", Item);
-    }
-    
-    if(Catalog == "Weapons")
-    {
-        if(Uses >= purchaseThreshold)
-        {
-            SetOwnerStatusCustomData("Purchased", Item);
-        }
-        else
-        {
-            SetOwnerStatusCustomData("Rented", Item);
-        }
-        
-        var updatedUses = Uses;
-            
-        if(Item.CustomData != null) 
-        {
-            var rentTimeString = Item.CustomData['RentTime'];
-            var rentTimeInt = parseInt(rentTimeString);
-            
-            updatedUses = Uses + rentTimeInt;
-        }
-        
-        SetRentTimeCustomData(updatedUses, Item);
-    }
-}
-
-function SetRentTimeCustomData(Uses, Item)
-{
-    server.UpdateUserInventoryItemCustomData({ PlayFabId: currentPlayerId, 
-    ItemInstanceId: Item.ItemInstanceId, Data: { "RentTime": Uses }});
-}
-
-function SetOwnerStatusCustomData(Status, Item)
-{
-    server.UpdateUserInventoryItemCustomData({ PlayFabId: currentPlayerId, 
-    ItemInstanceId: Item.ItemInstanceId, Data: { "Status": Status }});
-}
-
-function GetNewItemInstance(Uses, Catalog, DisplayName)
-{
-    var GrantItemsToUserResult = GrantItems(DisplayName, Catalog);
-        
-    for(var index in GrantItemsToUserResult.ItemGrantResults)
-    {
-        var item = GrantItemsToUserResult.ItemGrantResults[index];
-            
-        if(item.DisplayName === DisplayName)
-        {
-            var usesWithoutGrantedInstance = Uses - 1;
-            
-            var result = ModifyItemUses(usesWithoutGrantedInstance, item);
-    
-            SetOwningStatus(Uses, item, Catalog);
-            
-            return result;
-        }
-    }
-}
-
-//////////////////////////////////////////////////////////////////////////////////////////
-//
-//  Grant Start Items
-//
-//////////////////////////////////////////////////////////////////////////////////////////
-
-var stacksPackName = "Start Stacks Pack";
-var lookPackName = "Start Look Pack";
-var weaponsPackName = "Start Weapons Pack";
-
-handlers.GrantStartWeapons = function(args) 
-{
-    GrantItems(weaponsPackName, "Weapons");
-    
-    var GetUserInventoryResult = server.GetUserInventory({ "PlayFabId": currentPlayerId });
-            
-    for(var index in GetUserInventoryResult.Inventory)
-    {
-        var item = GetUserInventoryResult.Inventory[index];
-        
-        if(item.CatalogVersion == "Weapons") 
-        {
-            SetStartStatus(item, item.CatalogVersion);
-        }
-    }
-}
-handlers.GrantStartStacks = function(args) 
-{
-    GrantItems(stacksPackName, "Stacks");
-    
-    var GetUserInventoryResult = server.GetUserInventory({ "PlayFabId": currentPlayerId });
-            
-    for(var index in GetUserInventoryResult.Inventory)
-    {
-        var item = GetUserInventoryResult.Inventory[index];
-        
-        if(item.CatalogVersion == "Stacks") 
-        {
-            SetStartStatus(item, item.CatalogVersion);
-        }
-    }
-}
-
-handlers.GrantStartLook = function(args) 
-{
-    GrantItems(lookPackName, "Look");
-    
-    var GetUserInventoryResult = server.GetUserInventory({ "PlayFabId": currentPlayerId });
-            
-    for(var index in GetUserInventoryResult.Inventory)
-    {
-        var item = GetUserInventoryResult.Inventory[index];
-        
-        if(item.CatalogVersion == "Look") 
-        {
-            SetStartStatus(item, item.CatalogVersion);
-        }
-    }
-}
-
-function SetStartStatus(Item, Catalog)
-{
-    if(Catalog == "Look")
-    {
-        SetOwnerStatusCustomData("Purchased", Item);
-    }
-    
-    if(Catalog == "Stacks")
-    {
-        SetOwnerStatusCustomData("Rented", Item);
-    }
-    
-    if(Catalog == "Weapons")
-    {
-        SetOwnerStatusCustomData("Purchased", Item);
-        SetRentTimeCustomData(0, Item);
-    }
-}
-
-
-//////////////////////////////////////////////////////////////////////////////////////////
-//
-//  Update Inventory
-//
-//////////////////////////////////////////////////////////////////////////////////////////
-
-handlers.UpdateInventory = function(args) {
-
-    var GetUserInventoryResult = server.GetUserInventory({ "PlayFabId": currentPlayerId });
-            
-    for(var index in GetUserInventoryResult.Inventory)
-    {
-        var item = GetUserInventoryResult.Inventory[index];
-            
-        if(item.CatalogVersion == "Look")
-        {
-            continue;
-        }
-            
-        if(item.CatalogVersion == "Stacks")
-        {
-            SimpleUses(item);
-            continue;
-        }
-            
-        if(item.CatalogVersion == "Weapons")
-        {
-            if(item.CustomData == null) continue;
-            
-            var status = item.CustomData['Status'];
-                
-            var rentTime = 0;
-                
-            if(status == "Rented")
-            {
-                var rentTimeRaw = RentTime(item);
-                rentTime = Math.round(rentTimeRaw);
-            }
-                
-            if(status == "Purchased")
-            {
-                rentTime = 0;
-            }
-                
-            server.UpdateUserInventoryItemCustomData({ PlayFabId: currentPlayerId, 
-            ItemInstanceId: item.ItemInstanceId, Data: { "RentTime": rentTime }});
-                    
-            continue;
-        }
-    }
-        
-    return GetUserInventoryResult.Inventory;
-}
-
-function SimpleUses(Item)
-{
-    if(Item.RemainingUses > 0)
-    {
-        return Item.RemainingUses;
+        UpdateUserReadOnlyDataRequest.Data[CHECK_IN_TRACKER] = 0 + ";" + newDate;
     }
     else
     {
-        return RevokeItem(Item);
+        UpdateUserReadOnlyDataRequest.Data[CHECK_IN_TRACKER] = streak + ";" + newDate;
     }
-}
 
-var secInDay = 86400;
-function RentTime(Item)
-{
-    if(Item.CustomData == null) return 0;
-    
-    var rentTime = Item.CustomData['RentTime'];
-    
-    //var rentSec = rentTime * secInDay;
-    
-    var rentSec = Item.RemainingUses * secInDay;
-                        
-    var purchaseDate = Date.parse(Item.PurchaseDate) / 1000;
-                        
-    var now = Date.now() / 1000; 
-                    
-    var currentExpiration = now - purchaseDate;
-                            
-    if(currentExpiration > rentSec)
-    {
-        return RevokeItem(Item);
-    }
-    else
-    {
-        var daysRemain = rentSec - currentExpiration;
-        var value = daysRemain / secInDay;
-                            
-        if (value < 1 && value >= 0) 
-        {
-            return 1;
-        }
-        if (value > 1)
-        {
-            return value;
-        }
-    }
+    server.UpdateUserReadOnlyData(UpdateUserReadOnlyDataRequest);
 }
-
-function RevokeItem(Item)
-{
-    server.RevokeInventoryItem({ PlayFabId: currentPlayerId, ItemInstanceId: Item.ItemInstanceId });
-    return 0;
-}
-
 
 //////////////////////////////////////////////////////////////////////////////////////////
 //
-//      REFERRAL PROGRAM
+//  Referral Programm
 //
 //////////////////////////////////////////////////////////////////////////////////////////
 
-var VIRTUAL_CURRENCY_CODE = "DM";
+var VIRTUAL_CURRENCY_CODE = "GL";
 var VIRTUAL_CURRENCY_AMOUNT = 100;
 var PLAYER_REFERRAL_KEY = "Referral";
-var MAXIMUM_REFERRALS = 12;
+var PLAYER_REFERRAL_REWARD_KEY = "ReferralReward";
+var MAXIMUM_REFERRALS = 5;
 var REFERRAL_BONUS_BUNDLE = "ReferralPack";
+var REFERRER_BONUS_BUNDLE = "ReferrerPack";
 var REFERRAL_MARK = "ReferralMark";
-var CATALOG_VERSION_REF = "Achievements";
+var CATALOG_VERSION_REF = "Setup";
 
 // Referral code is PlayFabId of referrer
 handlers.RedeemReferral = function(args) {
@@ -388,14 +174,13 @@ handlers.RedeemReferral = function(args) {
         // Check Input Correct
         if(args == null || typeof args.referralCode === undefined || args.referralCode === "")
         {
-            throw "Failed to redeem. args.referralCode is undefined or blank";
+            throw "Failed to redeem. Referral code is undefined or blank";
         }
         
         else if(args.referralCode === currentPlayerId)
         {
-            throw "You are not allowed to refer yourself.";
+            throw "You are not allowed to refer yourself";
         }
-
         
         // Check Referral Mark
         var GetUserInventoryResult = server.GetUserInventory({ "PlayFabId": currentPlayerId });
@@ -404,7 +189,7 @@ handlers.RedeemReferral = function(args) {
         {
             if(GetUserInventoryResult.Inventory[index].ItemId === REFERRAL_MARK)
             {
-                throw "You are only allowed one Referral Mark.";
+                throw "You are only allowed one Referral Mark";
             }
         }
 
@@ -417,7 +202,6 @@ handlers.RedeemReferral = function(args) {
         }; 
         
         var GetUserReadOnlyDataResult = server.GetUserReadOnlyData(GetUserReadOnlyDataRequest);
-        
         
         // Referrals list of Referrer 
         var referralValues = [];
@@ -446,30 +230,31 @@ handlers.RedeemReferral = function(args) {
                 
                 else
                 {
-                    log.info("Player:" + args.referralCode + 
-                    " has hit the maximum number of referrals (" + MAXIMUM_REFERRALS + ")." );
+                    log.info("Your referral has hit the maximum number of referrals (" + MAXIMUM_REFERRALS + ")" );
                 }
             }
             
             else
             {
-                throw "An error occured when parsing the referrer's player data.";
+                throw "An error occured when parsing the referrer's player data";
             }
         }
         
-        SetReferralFriend(currentPlayerId, args.referralCode, "Referral");
-        SetReferralFriend(args.referralCode, currentPlayerId, "Referrer");
+        SetReferralFriend(currentPlayerId, args.referralCode, "Confirmed");
+        SetReferralFriend(args.referralCode, currentPlayerId, "Confirmed");
+        //SetReferralFriend(args.referralCode, currentPlayerId, "Invited");
         
-        // Bonus for Referral
-        return GrantReferralBonus(args.referralCode);
+        GrantReferralBonus();
+        
+        //GrantReferrerBonus(args.referralCode, currentPlayerId);
+        
+        RecordReferrerBonus(referrerId, args.referralCode);
+        
+        return null;
     } 
     catch(e) 
     {
-        var retObj = {};
-        
-        retObj["errorDetails"] = "Error: " + e;
-        
-        return null;
+        return e;
     }
 };
 
@@ -484,12 +269,15 @@ function SetReferralFriend(userId, friendId, refTag)
     }; 
         
     server.AddFriend(AddFriendRequest);
+        
+    var referralTags = [];
+    referralTags.push(refTag);
     
     var SetFriendTagRequest = 
     {
-            "PlayFabId": userId,
-            "FriendPlayFabId": friendId,
-            "Tags": [ "Confirmed", refTag ]
+        "PlayFabId": userId,
+        "FriendPlayFabId": friendId,
+        "Tags": referralTags
     }; 
         
     server.SetFriendTags(SetFriendTagRequest);
@@ -506,62 +294,18 @@ function ProcessReferrer(id, referrals)
     
     UpdateUserReadOnlyDataRequest.Data[PLAYER_REFERRAL_KEY] = JSON.stringify(referrals);
     
-    var UpdateUserReadOnlyDataResult = server.UpdateUserReadOnlyData(UpdateUserReadOnlyDataRequest);
-
-    var AddUserVirtualCurrencyRequest = 
-    {
-        "PlayFabId" : id,
-        "VirtualCurrency": VIRTUAL_CURRENCY_CODE,
-        "Amount": VIRTUAL_CURRENCY_AMOUNT
-    };
-    
-    var AddUserVirtualCurrencyResult = server.AddUserVirtualCurrency(AddUserVirtualCurrencyRequest);
-
-    log.info(AddUserVirtualCurrencyRequest.Amount + " " + VIRTUAL_CURRENCY_CODE 
-    + " granted to " + id);
-    
-    return AddReferralUnit(id);
+    server.UpdateUserReadOnlyData(UpdateUserReadOnlyDataRequest);
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////
 
-function AddReferralUnit(id)
-{
-    var REFERRALS = 0;
-
-    var playerStats = server.GetPlayerStatistics({ PlayFabId: id }).Statistics;
-    
-    for (var i = 0; i < playerStats.length; i++)
-    {
-        if (playerStats[i].StatisticName === "Referrals")
-        {
-            REFERRALS = playerStats[i].Value;
-        }
-    }
-    
-    REFERRALS++;
-    
-    var request = { PlayFabId: id, Statistics: 
-        [{
-            StatisticName: "Referrals",
-            Value: REFERRALS
-        }]
-    };
-             
-    var playerStatResult = server.UpdatePlayerStatistics(request);
-    return playerStatResult;
-}
-
-//////////////////////////////////////////////////////////////////////////////////////////
-
-function GrantReferralBonus(code)
+function GrantReferralBonus()
 {
     var GrantItemsToUserRequest = 
     {
         "CatalogVersion" : CATALOG_VERSION_REF,
         "PlayFabId" : currentPlayerId,
-        "ItemIds" : [ REFERRAL_MARK, REFERRAL_BONUS_BUNDLE ],
-        "Annotation" : "Referred by: " + code
+        "ItemIds" : [ REFERRAL_MARK, REFERRAL_BONUS_BUNDLE ]
     };
 
     var GrantItemsToUserResult = server.GrantItemsToUser(GrantItemsToUserRequest);
@@ -569,6 +313,98 @@ function GrantReferralBonus(code)
     return GrantItemsToUserResult.ItemGrantResults;
 }
 
+function GrantReferrerBonus(referrerId, referralId)
+{
+    var GrantItemsToUserRequest = 
+    {
+        "CatalogVersion" : CATALOG_VERSION_REF,
+        "PlayFabId" : referrerId,
+        "ItemIds" : [ REFERRER_BONUS_BUNDLE ]
+    };
+
+    var GrantItemsToUserResult = server.GrantItemsToUser(GrantItemsToUserRequest);
+    
+    return GrantItemsToUserResult.ItemGrantResults;
+}
+
+function RecordReferrerBonus(referrerId, referralId)
+{
+    // Reward for Referrer
+    var GetUserReadOnlyDataRequest = 
+    {
+        "PlayFabId": referrerId,
+        "Keys": [ PLAYER_REFERRAL_REWARD_KEY ]
+    }; 
+    
+    var GetUserReadOnlyDataResult = server.GetUserReadOnlyData(GetUserReadOnlyDataRequest);
+
+    var referralValues = [];
+    
+    if(!GetUserReadOnlyDataResult.Data.hasOwnProperty(PLAYER_REFERRAL_REWARD_KEY))
+    {
+        referralValues.push(referralId);
+        AddReferrerReward(referralValues);
+    }
+    else
+    {
+        referralValues = JSON.parse(GetUserReadOnlyDataResult.Data[PLAYER_REFERRAL_REWARD_KEY].Value);
+            
+        if(Array.isArray(referralValues))
+        {
+            referralValues.push(referrerId);
+            AddReferrerReward(referralValues);
+        }
+        
+        else
+        {
+            throw "An error occured when parsing the referrer's player data";
+        }
+    }
+}
+
+function AddReferrerReward(referralsRecord)
+{
+    var UpdateUserReadOnlyDataRequest = 
+    {
+        "PlayFabId": currentPlayerId,
+        "Data": {}
+    };
+    
+    UpdateUserReadOnlyDataRequest.Data[PLAYER_REFERRAL_REWARD_KEY] = JSON.stringify(referralsRecord);
+    
+    server.UpdateUserReadOnlyData(UpdateUserReadOnlyDataRequest);
+}
+
+handlers.CheckNewReferrals = function(args) 
+{
+    var GetUserReadOnlyDataRequest = 
+    {
+        "PlayFabId": currentPlayerId,
+        "Keys": [ PLAYER_REFERRAL_REWARD_KEY ]
+    }; 
+    
+    var GetUserReadOnlyDataResult = server.GetUserReadOnlyData(GetUserReadOnlyDataRequest);
+
+    var referralValues = [];
+    
+    if(GetUserReadOnlyDataResult.Data.hasOwnProperty(PLAYER_REFERRAL_REWARD_KEY))
+    {
+        referralValues = JSON.parse(GetUserReadOnlyDataResult.Data[PLAYER_REFERRAL_REWARD_KEY].Value);
+        
+        return referralValues.length;
+        
+        if(Array.isArray(referralValues))
+        {
+            return {"message":"Referrals was found", "referrals" : referralValues, "reward" : referralValues.length * 1000};
+        }
+        else
+        {
+            return {"message":"Referral value error"};
+        }
+    }
+    
+    return {"message":"No referrals found"};
+}
 
 //////////////////////////////////////////////////////////////////////////////////////////
 //
@@ -578,176 +414,487 @@ function GrantReferralBonus(code)
 
 handlers.AddFriend = function(args) {
 
-        var AddFriendRequest = 
-        {
-            "PlayFabId": args.PlayFabId,
-            "FriendTitleDisplayName": args.FriendName
-        }; 
-        
-        return server.AddFriend(AddFriendRequest);
+    var AddFriendRequest = 
+    {
+        "PlayFabId": args.PlayFabId,
+        "FriendPlayFabId": args.FriendId
+    }; 
+    
+    return server.AddFriend(AddFriendRequest);
 }
 
 handlers.SetFriendTags = function(args) {
 
-        var SetFriendTagRequest = 
-        {
-            "PlayFabId": args.PlayFabId,
-            "FriendPlayFabId": args.FriendId,
-            "Tags": args.FriendTags
-        }; 
-        
-        return server.SetFriendTags(SetFriendTagRequest);
+    var SetFriendTagRequest = 
+    {
+        "PlayFabId": args.PlayFabId,
+        "FriendPlayFabId": args.FriendId,
+        "Tags": args.FriendTags
+    }; 
+    
+    return server.SetFriendTags(SetFriendTagRequest);
 }
 
 handlers.RemoveFriend = function(args) {
 
-        var RemoveFriendRequest = 
+    var RemoveFriendRequest = 
+    {
+        "PlayFabId": args.PlayFabId,
+        "FriendPlayFabId": args.FriendId
+    }; 
+    
+    return server.RemoveFriend(RemoveFriendRequest);
+}
+
+handlers.GetFriends = function(args) {
+
+    if(args.PlayFabId == currentPlayerId)
+    {
+        var GetFriendRequest = 
         {
-            "PlayFabId": args.UserId,
-            "FriendPlayFabId": args.FriendId
+            "PlayFabId": currentPlayerId
         }; 
         
-        return server.RemoveFriend(RemoveFriendRequest);
+        return server.GetFriendsList(GetFriendRequest);
+    }
+
+    var GetFriendRequest = 
+    {
+        "PlayFabId": args.PlayFabId
+    }; 
+    
+    return server.GetFriendsList(GetFriendRequest);
 }
 
-
 //////////////////////////////////////////////////////////////////////////////////////////
 //
-//  Characters
+//  Currency
 //
 //////////////////////////////////////////////////////////////////////////////////////////
 
+handlers.UpdateMainCurrency = function(args) {
 
-handlers.CreateCustomCharacter = function(args) {
+    var recentCurrencyValue = GetUserCurrency("GL");
+    var newCurrencyValue = args.NewCurrencyValue;
     
-    var GrantCharacterToUserRequest = 
+    var substractedValue = recentCurrencyValue - newCurrencyValue;
+    
+    if (substractedValue < 0)
     {
-        "CharacterName": args.CharacterName,
-        "CharacterType": "Custom",
-        "PlayFabId": currentPlayerId,
+        SubstractItemPrice(newCurrencyValue, "GL");
+        return null;
     }
     
-    var GrantCharacterToUserResult = server.GrantCharacterToUser(GrantCharacterToUserRequest);
-    
-    return GrantCharacterToUserResult.CharacterId;
+    return SubstractItemPrice(substractedValue, "GL");
 }
 
-//////////////////////////////////////////////////////////////////////////////////////////
-
-var secretKey = "1AIBIWQD8ZC7MJ3D319ZPK5GSWXQ9ZCM9Z73JP1MBX37NU49RF";
-handlers.RemoveCustomCharacter = function(args) {
-    
-    var DeleteCharacterFromUserRequest = 
-    {
-        "CharacterId": args.CharacterId,
-        "PlayFabId": currentPlayerId,
-        "SaveCharacterInventory": true,
-    }
-    
-    return server.DeleteCharacterFromUser(DeleteCharacterFromUserRequest);
-}
-
-
-//////////////////////////////////////////////////////////////////////////////////////////
-//
-//      STATISTICS
-//
-//////////////////////////////////////////////////////////////////////////////////////////
-
-var CAPTURES;
-var RESOURCE;
-var FRAGS;
-    
-handlers.UpdateUserStatistic = function(args, context) {
-    
-    GetBattleStats();
-    
-    switch(args.rewartType)
-    {
-        case "HeavyVehicle":
-        FRAGS++;
-        RESOURCE += 1000;
-        break;
-        
-        case "LightVehicle":
-        FRAGS++;
-        RESOURCE += 800;
-        break;
-    }
-    
-    SetBattleStats();
-}
-
-function GetBattleStats()
+function GetUserCurrency(Currency)
 {
-    var playerStats = server.GetPlayerStatistics({ PlayFabId: currentPlayerId }).Statistics;
-    
+    var request = { "InfoRequestParameters": { "GetUserVirtualCurrency": true }, "PlayFabId": currentPlayerId };
+    return server.GetPlayerCombinedInfo(request).InfoResultPayload.UserVirtualCurrency[Currency];
+}
+
+
+function SubstractItemPrice(Value, Currency)
+{
+    server.SubtractUserVirtualCurrency({PlayFabId: currentPlayerId, 
+    VirtualCurrency: Currency, Amount: Value});
+}
+
+
+
+//////////////////////////////////////////////////////////////////////////////////////////
+//
+//  Spin
+//
+//////////////////////////////////////////////////////////////////////////////////////////
+
+var SPIN_COOLDOWN_SECONDS = 149;
+
+handlers.ProcessSpin = function(args)
+{
+    var playerMove = "Spin";
+    var now = Date.now();
+    var playerMoveCooldownInSeconds = SPIN_COOLDOWN_SECONDS;
+
+    var playerData = server.GetUserInternalData({
+        PlayFabId: currentPlayerId,
+        Keys: ["last_move_timestamp"]
+    });
+
+    var lastMoveTimestampSetting = playerData.Data["last_move_timestamp"];
+
+    if (lastMoveTimestampSetting) {
+        var lastMoveTime = Date.parse(lastMoveTimestampSetting.Value);
+        var timeSinceLastMoveInSeconds = (now - lastMoveTime) / 1000;
+        log.debug("lastMoveTime: " + lastMoveTime + " now: " + now + " timeSinceLastMoveInSeconds: " + timeSinceLastMoveInSeconds);
+
+        if (timeSinceLastMoveInSeconds < playerMoveCooldownInSeconds) {
+            log.error("Invalid move - time since last move: " + timeSinceLastMoveInSeconds + "s less than minimum of " + playerMoveCooldownInSeconds + "s.");
+            return false;
+        }
+    }
+
+    var playerStats = server.GetPlayerStatistics({
+        PlayFabId: currentPlayerId
+    }).Statistics;
+    var movesMade = 0;
     for (var i = 0; i < playerStats.length; i++)
-    {
-        if (playerStats[i].StatisticName === "Captures")
-        {
-            CAPTURES = playerStats[i].Value;
+        if (playerStats[i].StatisticName === "")
+            movesMade = playerStats[i].Value;
+    movesMade += 1;
+    var request = {
+        PlayFabId: currentPlayerId, Statistics: [{
+                StatisticName: "movesMade",
+                Value: movesMade
+            }]
+    };
+    server.UpdatePlayerStatistics(request);
+    server.UpdateUserInternalData({
+        PlayFabId: currentPlayerId,
+        Data: {
+            last_move_timestamp: new Date(now).toUTCString(),
+            last_move: JSON.stringify(playerMove)
         }
-        
-        if (playerStats[i].StatisticName === "Resource")
-        {
-            RESOURCE = playerStats[i].Value;
-        }
-        
-        if (playerStats[i].StatisticName === "Frags")
-        {
-            FRAGS = playerStats[i].Value;
-        }
-    }
+    });
+
+    return true;
 }
-    
+
+//////////////////////////////////////////////////////////////////////////////////////////
+//
+//  Player data
+//
 //////////////////////////////////////////////////////////////////////////////////////////
 
-function SetBattleStats()
-{
-    MMR = (CAPTURES*RESOURCE*FRAGS)/10000;
-    
-    var request = { PlayFabId: currentPlayerId, Statistics: 
-        [{
-            StatisticName: "Captures",
-            Value: CAPTURES
-        },
-        {
-            StatisticName: "Resource",
-            Value: RESOURCE
-        },
-        {
-            StatisticName: "Frags",
-            Value: FRAGS
-        }]
+var NEWLY_STATUS_KEY = "Newly";
+var NEWLY_STATUS_VALUE = "False";
+
+var SKIN_KEY = "UnitSkin";
+var SKIN_START_VALUE = "Material_Chr_01_A";
+
+var DEFAULT_ITEMS_CATALOG = "Character";
+var DEFAULT_ITEMS_PACK = "Default Characters";
+
+var DISABLE_AD_KEY = "Disable Ads";
+var DISABLE_AD_VALUE_DEFAULT = "false";
+var DISABLE_AD_VALUE_PURCHASED = "true";
+
+handlers.CreateDefaultPlayerData = function(args)
+{ 
+    var updatePlayerStatisticsRequest = { PlayFabId: currentPlayerId, Statistics: [
+        { StatisticName: "Matches", Value: 0 },
+        { StatisticName: "Frags", Value: 0 },
+        { StatisticName: "Deaths", Value: 0 },
+        { StatisticName: "Referrals", Value: 0 },
+        { StatisticName: "Cups", Value: 0 },
+        { StatisticName: "GameTime", Value: 0 }
+        ]
     };
              
-    var playerStatResult = server.UpdatePlayerStatistics(request);
-}
-
-//////////////////////////////////////////////////////////////////////////////////////////
-//
-//  REWARDS
-//
-//////////////////////////////////////////////////////////////////////////////////////////
-
-var RandomCatalog;
-
-handlers.GrantItem = function()
-{ 
-    var Catalogs = [ "Weapons", "Strikes", "Characters", "Armor" ],
-    RandomCatalog = Catalogs[Math.floor(Math.random() * Catalogs.length)];
+    server.UpdatePlayerStatistics(updatePlayerStatisticsRequest);
     
-    var GrantItemsToUserRequest = 
-        {
-            "CatalogVersion" : RandomCatalog,
-            "PlayFabId" : currentPlayerId,
-            "ItemIds" : [ "Drop" ],
-            "Annotation" : Cups + " Cups"
-        };
-
-    var GrantItemsToUserResult = server.GrantItemsToUser(GrantItemsToUserRequest);
-    return GrantItemsToUserResult.ItemGrantResults;
+    var UpdateUserDataRequest = 
+    {
+        "PlayFabId": currentPlayerId,
+        "Data": {},
+        "Permission": "Public"
+    };
+    
+    UpdateUserDataRequest.Data[NEWLY_STATUS_KEY] = NEWLY_STATUS_VALUE;
+    UpdateUserDataRequest.Data[SKIN_KEY] = SKIN_START_VALUE;
+    UpdateUserDataRequest.Data[DISABLE_AD_KEY] = DISABLE_AD_VALUE_DEFAULT;
+    
+    server.UpdateUserData(UpdateUserDataRequest);
+    
+    GrantItems(DEFAULT_ITEMS_PACK, DEFAULT_ITEMS_CATALOG);
+    
+    StartGoldPack();
 }
 
+var PICKED_ITEMS_KEY = "PickedItems";
+handlers.SetPickedItems = function(args)
+{ 
+    var UpdateUserDataRequest = 
+    {
+        "PlayFabId": currentPlayerId,
+        "Data": {},
+    
+        "Permission": "Public"
+    };
+    
+    UpdateUserDataRequest.Data[PICKED_ITEMS_KEY] = args.PickedItems;
+    
+    server.UpdateUserData(UpdateUserDataRequest);
+}
+
+
+var ITEMS_KEY = "Items";
+
+handlers.SetCharacterToUser = function(args)
+{
+    var inventoryItems = GetPlayerInventory();
+    
+    var pickedItems = args.PickedItems;
+    
+    var pickedItemsData = pickedItems.split(';');
+    
+    var savingItems = "";
+    
+    for(var index in inventoryItems)
+    {
+        var inventoryItem = inventoryItems[index];
+        
+        for(var pickedItem of pickedItemsData)
+        {
+            if(pickedItem == inventoryItem.DisplayName)
+            {
+                savingItems += inventoryItem.DisplayName + ";";
+            }
+        }
+    }
+    
+    var UpdateUserDataRequest = 
+    {
+        "PlayFabId": currentPlayerId,
+        "Data": {},
+        "Permission": "Public"
+    };
+    
+    UpdateUserDataRequest.Data[NEWLY_STATUS_KEY] = "False";
+    UpdateUserDataRequest.Data[SKIN_KEY] = args.SkinValue;
+    UpdateUserDataRequest.Data[ITEMS_KEY] = savingItems;
+    
+    server.UpdateUserData(UpdateUserDataRequest);
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////
+//
+//  Shop
+//
+//////////////////////////////////////////////////////////////////////////////////////////
+
+handlers.StartGoldPack = function(args)
+{
+    return GrantItems("Gold Start", "Support");
+}
+
+handlers.SmallGoldPack = function(args)
+{
+    return GrantItems("Gold Small", "Support");
+}
+
+handlers.MediumGoldPack = function(args)
+{
+    return GrantItems("Gold Medium", "Support");
+}
+
+handlers.LargeGoldPack = function(args)
+{
+    return GrantItems("Gold Large", "Support");
+}
+
+handlers.DisableAds = function(args)
+{
+    var UpdateUserDataRequest = 
+    {
+        "PlayFabId": currentPlayerId,
+        "Data": {},
+        "Permission": "Public"
+    };
+    
+    UpdateUserDataRequest.Data[DISABLE_AD_KEY] = DISABLE_AD_VALUE_PURCHASED;
+    
+    server.UpdateUserData(UpdateUserDataRequest);
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////
+//
+//  Grant Items
+//
+//////////////////////////////////////////////////////////////////////////////////////////
+
+handlers.GrantItemsArray = function(args)
+{
+    var GrantItemsToUserRequest = 
+    {
+        "CatalogVersion" : args.Catalog,
+        "PlayFabId" : currentPlayerId,
+        "ItemIds" : args.ItemsArray
+    };
+    
+    return server.GrantItemsToUser(GrantItemsToUserRequest).ItemGrantResults;
+}
+
+function GrantItems(ItemId, Catalog)
+{
+    var GrantWeaponsToUserRequest = 
+    {
+        "CatalogVersion" : Catalog,
+        "PlayFabId" : currentPlayerId,
+        "ItemIds" : [ ItemId ]
+    };
+    
+    return server.GrantItemsToUser(GrantWeaponsToUserRequest);
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////
+//
+//  Session Items
+//
+//////////////////////////////////////////////////////////////////////////////////////////
+
+var requiredUserDataKey = "Items";
+
+handlers.GetSessionItems = function(args)
+{
+    var inventoryItems = GetPlayerInventory();
+    
+    var pickedItems = GetPlayerDataValue(requiredUserDataKey);
+    
+    var pickedItemsData = pickedItems.split(';');
+    
+    var sessionItems = [];
+    
+    for(var index in inventoryItems)
+    {
+        var inventoryItem = inventoryItems[index];
+        
+        for(var pickedItem of pickedItemsData)
+        {
+            if(pickedItem == inventoryItem.DisplayName)
+            {
+                sessionItems.push(inventoryItem.DisplayName);
+            }
+        }
+    }
+    
+    return sessionItems;
+}
+
+function GetPlayerInventory() 
+{
+    return server.GetUserInventory({ "PlayFabId": currentPlayerId }).Inventory;
+}
+
+function GetPlayerDataValue(key) 
+{
+    var getPlayerInfo = server.GetUserData
+        ({
+            PlayFabId: currentPlayerId,
+            Keys: [ key ],
+        });
+        
+    return getPlayerInfo.Data[key].Value;
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////
+//
+//  Purchase Items
+//
+//////////////////////////////////////////////////////////////////////////////////////////
+
+handlers.BuyInventoryItem = function(args)
+{
+    var success = PayForItem(args.ItemId, args.CatalogVersion, true);
+    
+    if(success)
+    {
+        GrantItems(args.ItemId, args.CatalogVersion);
+        return true;
+    }
+    else
+    {
+        return false;
+    }
+}
+
+handlers.UserCanBuyItem = function(args)
+{
+    return PayForItem(args.ItemId, args.CatalogVersion, true);
+}    
+    
+function PayForItem(itemId, catalogVersion, substractPrice) 
+{
+    var GetCatalogItemsResult = server.GetCatalogItems({ CatalogVersion: catalogVersion });
+    
+    var itemPrice = 0;
+    
+    for(var catalogItem in GetCatalogItemsResult.Catalog)
+    {
+        var item = GetCatalogItemsResult.Catalog[catalogItem];
+        
+        if(item.ItemId == itemId)
+        {
+            itemPrice = item.VirtualCurrencyPrices["GL"];
+        }
+    }
+    
+    var request = { "InfoRequestParameters": { "GetUserVirtualCurrency": true }, "PlayFabId": currentPlayerId };
+    var currencyAmount = server.GetPlayerCombinedInfo(request).InfoResultPayload.UserVirtualCurrency["GL"];
+    
+    var success = itemPrice > 0 && currencyAmount >= itemPrice;
+    
+    if(success && substractPrice)
+    {
+        SubstractItemPrice(itemPrice, "GL");
+    }
+        
+    return success;
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////
+//
+//  Photon Events
+//
+//////////////////////////////////////////////////////////////////////////////////////////
+
+handlers.RoomCreate = function (args) {
+    server.WriteTitleEvent({
+        EventName : "room_create"
+    });
+    return { ResultCode : 0, Message: 'Success' };
+};
+
+handlers.RoomCreated = function (args) {
+    server.WriteTitleEvent({
+        EventName : "room_created"
+    });
+    return { ResultCode : 0, Message: 'Success' };
+};
+
+handlers.RoomJoined = function (args) {
+    server.WriteTitleEvent({
+        EventName : "room_joined"
+    });
+    return { ResultCode : 0, Message: 'Success' };
+};
+
+handlers.RoomLeft = function (args) {
+    server.WriteTitleEvent({
+        EventName : "room_left"
+    });
+    return { ResultCode : 0, Message: 'Success' };
+};
+
+handlers.RoomClosed = function (args) {
+    server.WriteTitleEvent({
+        EventName : "room_closed"
+    });
+    return { ResultCode : 0, Message: 'Success' };
+};
+
+handlers.RoomPropertyUpdated = function (args) {
+    server.WriteTitleEvent({
+        EventName : "room_property_changed"
+    });
+    return { ResultCode : 0, Message: 'Success' };
+};
+
+handlers.RoomEventRaised = function (args) {
+    server.WriteTitleEvent({
+        EventName : "room_event_raised"
+    });
+    return { ResultCode : 0, Message: 'Success' };
+};
     
