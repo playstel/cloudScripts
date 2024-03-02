@@ -15,16 +15,42 @@ var TRACKER_LOGIN_STREAK = "LoginStreak";					// CHECK_IN_TRACKER property conta
 
 handlers.CheckIn = function(args) {
 
+    var referralMark = CheckReferralMark();
+    var newReferralsIds = CheckNewReferrals();
+
 	var GetUserReadOnlyDataRequest = {
         "PlayFabId": currentPlayerId,
-        "Keys": [ CHECK_IN_TRACKER ]
+        "Keys": [ CHECK_IN_TRACKER, AD_WATCH_KEY, ADDRESSABLES_VERSION_KEY, AD_STREAK_KEY ]
     }; 
     
     var GetUserReadOnlyDataResponse = server.GetUserReadOnlyData(GetUserReadOnlyDataRequest);
     
     // need to ensure that our data field exists
     var tracker = {}; // this would be the first login ever (across any title), so we have to make sure our record exists.
-        
+    
+    var ad = false;
+    var addressablesVersion = 0;
+    var starsStreak = 0;
+    var loginStreak = 0;
+    var nextGrant = 0;
+    
+    if(GetUserReadOnlyDataResponse.Data.hasOwnProperty(AD_STREAK_KEY))
+    {
+    	starsStreak = GetUserReadOnlyDataResponse.Data[AD_STREAK_KEY].Value;
+    }
+    
+    if(GetUserReadOnlyDataResponse.Data.hasOwnProperty(AD_WATCH_KEY))
+    {
+    	var watchAd = GetUserReadOnlyDataResponse.Data[AD_WATCH_KEY].Value;
+    	
+    	if (watchAd == "true") ad = true;
+    }
+    
+    if(GetUserReadOnlyDataResponse.Data.hasOwnProperty(ADDRESSABLES_VERSION_KEY))
+    {
+    	addressablesVersion = GetUserReadOnlyDataResponse.Data[ADDRESSABLES_VERSION_KEY].Value;
+    }
+    
     if(GetUserReadOnlyDataResponse.Data.hasOwnProperty(CHECK_IN_TRACKER))
     {
     	//tracker = JSON.parse(GetUserReadOnlyDataResponse.Data[CHECK_IN_TRACKER].Value);
@@ -36,15 +62,47 @@ handlers.CheckIn = function(args) {
   		
   		// write back updated data to PlayFab
   		UpdateTrackerData(tracker);
+  		
+        GrantItems("Gold Start", "Support");
+        
+        
+        // streak continues
+		loginStreak += 1;
+		
+        if(loginStreak > 7) loginStreak = 1;
+		
+		var dateObj = new Date(Date.now());
+		dateObj.setDate(dateObj.getDate() + 1); // add one day 
+		nextGrant = dateObj.getTime();
 
-    	return {"currentStreak":tracker[TRACKER_LOGIN_STREAK],"bonusIsReady":false,"bonusName":"Gold Medium","message":"This was your first login! " + Date.now(), 
-    	    "firstLoginBonus": true };
+		// write back updated data to PlayFab
+		log.info("Your consecutive login streak increased to: " + loginStreak);
+		//UpdateTrackerData(tracker);
+		
+		UpdateTrackerDataManual(loginStreak, nextGrant);
+		
+		var bonusName = SetBonus(loginStreak);
+		
+        return {"currentStreak":loginStreak,"dailyBonus":true,"message":"Daily and first login bonuses is ready!", 
+    	    "firstLoginBonus": true,"newReferralsIds":newReferralsIds, "referralMark":referralMark, "ad":ad, 
+    	    "addressablesVersion" : addressablesVersion, "starsStreak":starsStreak };
+
+    // 	return {"currentStreak":tracker[TRACKER_LOGIN_STREAK],"dailyBonus":false,"message":"This was your first login!", 
+    // 	    "firstLoginBonus": true,"newReferralsIds":newReferralsIds, "referralMark":referralMark, "ad":ad, 
+    // 	    "addressablesVersion" : addressablesVersion, "starsStreak":starsStreak };
     }
 
-    var values = tracker.split(';');
-    
-    var loginStreak = parseInt(values[0]);
-    var nextGrant = parseInt(values[1]);
+    if(tracker != null)
+    {
+        var values = tracker.split(';');
+        
+        if(values[0] != NaN)
+        {
+            loginStreak = parseInt(values[0]);
+        }
+        
+        nextGrant = parseInt(values[1]);
+    }
 
 	if(Date.now() > nextGrant)
 	{	
@@ -60,11 +118,10 @@ handlers.CheckIn = function(args) {
 			//UpdateTrackerData(tracker);
 			
 		    UpdateTrackerData(tracker);
-
-            GrantItems("Gold Medium", "Support");
         
-    	    return {"currentStreak":loginStreak,"bonusIsReady":false,"bonusName":"","message":"Your consecutive login streak has been broken. Login tomorrow to get a bonus! " + Date.now(), 
-    	    "firstLoginBonus": false };
+    	    return {"currentStreak":loginStreak,"dailyBonus":false,"message":"Your daily bonus streak has been broken", 
+    	    "firstLoginBonus": false,"newReferralsIds":newReferralsIds, "referralMark":referralMark, "ad":ad, 
+    	    "addressablesVersion" : addressablesVersion, "starsStreak":starsStreak };
 		}
 
 		// streak continues
@@ -82,33 +139,32 @@ handlers.CheckIn = function(args) {
 		
 		UpdateTrackerDataManual(loginStreak, nextGrant);
 		
-		return SetBonus(loginStreak);
+		var bonusName = SetBonus(loginStreak);
+		
+        return {"currentStreak":loginStreak,"dailyBonus":true,"message":"Daily bonus is ready!", 
+    	    "firstLoginBonus": false,"newReferralsIds":newReferralsIds, "referralMark":referralMark, "ad":ad, 
+    	    "addressablesVersion" : addressablesVersion, "starsStreak":starsStreak };
 	}
 
-    return {"currentStreak":loginStreak,"bonusIsReady":false,"bonusName":"","message":"Bonus is not ready yet! " + Date.now(), 
-    	    "firstLoginBonus": false };
+    return {"currentStreak":loginStreak,"dailyBonus":false,"message":"Daily bonus is not ready yet!", 
+    	    "firstLoginBonus": false,"newReferralsIds":newReferralsIds, "referralMark":referralMark, "ad":ad, 
+    	    "addressablesVersion" : addressablesVersion, "starsStreak":starsStreak };
 };
 
-function SetBonus(Streak) {
- 
+function SetBonus(Streak) 
+{
     var streak = parseInt(Streak);
     
     var bonusName = "Gold Small";
     
     if(streak > 7)
     {
-        GrantItems("Gold Medium", "Support");
-        return {"currentStreak":streak,"bonusIsReady":true,"bonusName":"Gold Medium","message":"Bonus is ready! " + Date.now(), 
-    	    "firstLoginBonus": false };
-    }
-    else
-    {
-        GrantItems("Gold Small", "Support");
-        return {"currentStreak":streak,"bonusIsReady":true,"bonusName":"Gold Small","message":"Bonus is ready! " + Date.now(), 
-    	    "firstLoginBonus": false };
+        bonusName = "Gold Medium";
     }
     
-    return null;
+    GrantItems(bonusName, "Support");
+        
+    return bonusName;
 }
 
 function ResetTracker()
@@ -150,6 +206,82 @@ function UpdateTrackerDataManual(streak, newDate)
     server.UpdateUserReadOnlyData(UpdateUserReadOnlyDataRequest);
 }
 
+
+//////////////////////////////////////////////////////////////////////////////////////////
+//
+//  Referrer Checkup
+//
+//////////////////////////////////////////////////////////////////////////////////////////
+
+function CheckNewReferrals()
+{
+    var GetUserReadOnlyDataRequest = 
+    {
+        "PlayFabId": currentPlayerId,
+        "Keys": [ PLAYER_REFERRAL_TEMPORARY_KEY ]
+    }; 
+    
+    var GetUserReadOnlyDataResult = server.GetUserReadOnlyData(GetUserReadOnlyDataRequest);
+
+    var referralValuesTemporary = [];
+    
+    if(GetUserReadOnlyDataResult.Data.hasOwnProperty(PLAYER_REFERRAL_TEMPORARY_KEY))
+    {
+        referralValuesTemporary = JSON.parse(GetUserReadOnlyDataResult.Data[PLAYER_REFERRAL_TEMPORARY_KEY].Value);
+        
+        if(Array.isArray(referralValuesTemporary))
+        {
+            var rewardAmount = 0;
+            
+            if(referralValuesTemporary.length > 0)
+            {
+                rewardAmount = referralValuesTemporary.length * VIRTUAL_CURRENCY_AMOUNT;
+                
+                AddCurrency(rewardAmount, VIRTUAL_CURRENCY_CODE);
+            }
+            
+            RemoveTemporaryReferralData();
+            
+            return referralValuesTemporary;
+        }
+        else
+        {
+            return null;
+        }
+    }
+    
+    return null;
+}
+
+function RemoveTemporaryReferralData()
+{
+    // Bonus for Referral and his Referrer
+    var UpdateUserReadOnlyDataRequest = 
+    {
+        "PlayFabId": currentPlayerId,
+        "Data": {}
+    };
+    
+    UpdateUserReadOnlyDataRequest.Data[PLAYER_REFERRAL_TEMPORARY_KEY] = null;
+    
+    server.UpdateUserReadOnlyData(UpdateUserReadOnlyDataRequest);
+}
+
+function CheckReferralMark()
+{
+    var GetUserInventoryResult = server.GetUserInventory({ "PlayFabId": currentPlayerId });
+        
+    for(var index in GetUserInventoryResult.Inventory)
+    {
+        if(GetUserInventoryResult.Inventory[index].ItemId === REFERRAL_MARK)
+        {
+            return 1;
+        }
+    }
+        
+    return 0;
+}
+
 //////////////////////////////////////////////////////////////////////////////////////////
 //
 //  Referral Programm
@@ -157,12 +289,11 @@ function UpdateTrackerDataManual(streak, newDate)
 //////////////////////////////////////////////////////////////////////////////////////////
 
 var VIRTUAL_CURRENCY_CODE = "GL";
-var VIRTUAL_CURRENCY_AMOUNT = 100;
+var VIRTUAL_CURRENCY_AMOUNT = 1000;
 var PLAYER_REFERRAL_KEY = "Referral";
-var PLAYER_REFERRAL_REWARD_KEY = "ReferralReward";
+var PLAYER_REFERRAL_TEMPORARY_KEY = "ReferralTemporary";
 var MAXIMUM_REFERRALS = 5;
 var REFERRAL_BONUS_BUNDLE = "ReferralPack";
-var REFERRER_BONUS_BUNDLE = "ReferrerPack";
 var REFERRAL_MARK = "ReferralMark";
 var CATALOG_VERSION_REF = "Setup";
 
@@ -174,12 +305,12 @@ handlers.RedeemReferral = function(args) {
         // Check Input Correct
         if(args == null || typeof args.referralCode === undefined || args.referralCode === "")
         {
-            throw "Failed to redeem. Referral code is undefined or blank";
+            throw "Failed to redeem. Invite code is undefined or blank";
         }
         
         else if(args.referralCode === currentPlayerId)
         {
-            throw "You are not allowed to refer yourself";
+            throw "You are not allowed to invite yourself";
         }
         
         // Check Referral Mark
@@ -189,7 +320,7 @@ handlers.RedeemReferral = function(args) {
         {
             if(GetUserInventoryResult.Inventory[index].ItemId === REFERRAL_MARK)
             {
-                throw "You are only allowed one Referral Mark";
+                throw "You are only allowed one invite mark";
             }
         }
 
@@ -198,7 +329,7 @@ handlers.RedeemReferral = function(args) {
         var GetUserReadOnlyDataRequest = 
         {
             "PlayFabId": args.referralCode,
-            "Keys": [ PLAYER_REFERRAL_KEY ]
+            "Keys": [ PLAYER_REFERRAL_KEY, PLAYER_REFERRAL_TEMPORARY_KEY ]
         }; 
         
         var GetUserReadOnlyDataResult = server.GetUserReadOnlyData(GetUserReadOnlyDataRequest);
@@ -211,7 +342,7 @@ handlers.RedeemReferral = function(args) {
         if(!GetUserReadOnlyDataResult.Data.hasOwnProperty(PLAYER_REFERRAL_KEY))
         {
             referralValues.push(currentPlayerId);
-            ProcessReferrer(args.referralCode, referralValues);
+            ProcessReferrer(args.referralCode, referralValues, PLAYER_REFERRAL_KEY);
         }
         
         // If Player already have some referrals
@@ -225,12 +356,47 @@ handlers.RedeemReferral = function(args) {
                 if(referralValues.length < MAXIMUM_REFERRALS)
                 {
                     referralValues.push(currentPlayerId);
-                    ProcessReferrer(args.referralCode, referralValues);
+                    ProcessReferrer(args.referralCode, referralValues, PLAYER_REFERRAL_KEY);
                 }
-                
                 else
                 {
-                    log.info("Your referral has hit the maximum number of referrals (" + MAXIMUM_REFERRALS + ")" );
+                    return "Your referral has hit the limit of invited friends";
+                }
+            }
+            
+            else
+            {
+                throw "An error occured when parsing the referrer's player data";
+            }
+        }
+        
+        
+        // Referrals list of Referrer 
+        var referralValuesTemporary = [];
+        
+        // If Player has become the Referrer at the First Time
+        if(!GetUserReadOnlyDataResult.Data.hasOwnProperty(PLAYER_REFERRAL_TEMPORARY_KEY))
+        {
+            referralValuesTemporary.push(currentPlayerId);
+            ProcessReferrer(args.referralCode, referralValuesTemporary, PLAYER_REFERRAL_TEMPORARY_KEY);
+        }
+        
+        // If Player already have some referrals
+        else
+        {
+            referralValuesTemporary = JSON.parse(GetUserReadOnlyDataResult.Data[PLAYER_REFERRAL_TEMPORARY_KEY].Value);
+            
+            if(Array.isArray(referralValuesTemporary))
+            {
+                // If referrals not too much
+                if(referralValuesTemporary.length < MAXIMUM_REFERRALS)
+                {
+                    referralValuesTemporary.push(currentPlayerId);
+                    ProcessReferrer(args.referralCode, referralValuesTemporary, PLAYER_REFERRAL_TEMPORARY_KEY);
+                }
+                else
+                {
+                    return "Your referral has hit the limit of invited friends";
                 }
             }
             
@@ -242,15 +408,10 @@ handlers.RedeemReferral = function(args) {
         
         SetReferralFriend(currentPlayerId, args.referralCode, "Confirmed");
         SetReferralFriend(args.referralCode, currentPlayerId, "Confirmed");
-        //SetReferralFriend(args.referralCode, currentPlayerId, "Invited");
         
         GrantReferralBonus();
         
-        //GrantReferrerBonus(args.referralCode, currentPlayerId);
-        
-        RecordReferrerBonus(referrerId, args.referralCode);
-        
-        return null;
+        return "Success";
     } 
     catch(e) 
     {
@@ -258,7 +419,36 @@ handlers.RedeemReferral = function(args) {
     }
 };
 
+
+function GrantReferralBonus()
+{
+    var GrantItemsToUserRequest = 
+    {
+        "CatalogVersion" : CATALOG_VERSION_REF,
+        "PlayFabId" : currentPlayerId,
+        "ItemIds" : [ REFERRAL_MARK, REFERRAL_BONUS_BUNDLE ]
+    };
+
+    var GrantItemsToUserResult = server.GrantItemsToUser(GrantItemsToUserRequest);
+    
+    return GrantItemsToUserResult.ItemGrantResults;
+}
+
 //////////////////////////////////////////////////////////////////////////////////////////
+
+function ProcessReferrer(id, referrals, key)
+{
+    // Bonus for Referral and his Referrer
+    var UpdateUserReadOnlyDataRequest = 
+    {
+        "PlayFabId": id,
+        "Data": {}
+    };
+    
+    UpdateUserReadOnlyDataRequest.Data[key] = JSON.stringify(referrals);
+    
+    server.UpdateUserReadOnlyData(UpdateUserReadOnlyDataRequest);
+}
 
 function SetReferralFriend(userId, friendId, refTag)
 {
@@ -283,128 +473,8 @@ function SetReferralFriend(userId, friendId, refTag)
     server.SetFriendTags(SetFriendTagRequest);
 }
 
-function ProcessReferrer(id, referrals)
-{
-    // Bonus for Referral and his Referrer
-    var UpdateUserReadOnlyDataRequest = 
-    {
-        "PlayFabId": id,
-        "Data": {}
-    };
-    
-    UpdateUserReadOnlyDataRequest.Data[PLAYER_REFERRAL_KEY] = JSON.stringify(referrals);
-    
-    server.UpdateUserReadOnlyData(UpdateUserReadOnlyDataRequest);
-}
 
-//////////////////////////////////////////////////////////////////////////////////////////
 
-function GrantReferralBonus()
-{
-    var GrantItemsToUserRequest = 
-    {
-        "CatalogVersion" : CATALOG_VERSION_REF,
-        "PlayFabId" : currentPlayerId,
-        "ItemIds" : [ REFERRAL_MARK, REFERRAL_BONUS_BUNDLE ]
-    };
-
-    var GrantItemsToUserResult = server.GrantItemsToUser(GrantItemsToUserRequest);
-    
-    return GrantItemsToUserResult.ItemGrantResults;
-}
-
-function GrantReferrerBonus(referrerId, referralId)
-{
-    var GrantItemsToUserRequest = 
-    {
-        "CatalogVersion" : CATALOG_VERSION_REF,
-        "PlayFabId" : referrerId,
-        "ItemIds" : [ REFERRER_BONUS_BUNDLE ]
-    };
-
-    var GrantItemsToUserResult = server.GrantItemsToUser(GrantItemsToUserRequest);
-    
-    return GrantItemsToUserResult.ItemGrantResults;
-}
-
-function RecordReferrerBonus(referrerId, referralId)
-{
-    // Reward for Referrer
-    var GetUserReadOnlyDataRequest = 
-    {
-        "PlayFabId": referrerId,
-        "Keys": [ PLAYER_REFERRAL_REWARD_KEY ]
-    }; 
-    
-    var GetUserReadOnlyDataResult = server.GetUserReadOnlyData(GetUserReadOnlyDataRequest);
-
-    var referralValues = [];
-    
-    if(!GetUserReadOnlyDataResult.Data.hasOwnProperty(PLAYER_REFERRAL_REWARD_KEY))
-    {
-        referralValues.push(referralId);
-        AddReferrerReward(referralValues);
-    }
-    else
-    {
-        referralValues = JSON.parse(GetUserReadOnlyDataResult.Data[PLAYER_REFERRAL_REWARD_KEY].Value);
-            
-        if(Array.isArray(referralValues))
-        {
-            referralValues.push(referrerId);
-            AddReferrerReward(referralValues);
-        }
-        
-        else
-        {
-            throw "An error occured when parsing the referrer's player data";
-        }
-    }
-}
-
-function AddReferrerReward(referralsRecord)
-{
-    var UpdateUserReadOnlyDataRequest = 
-    {
-        "PlayFabId": currentPlayerId,
-        "Data": {}
-    };
-    
-    UpdateUserReadOnlyDataRequest.Data[PLAYER_REFERRAL_REWARD_KEY] = JSON.stringify(referralsRecord);
-    
-    server.UpdateUserReadOnlyData(UpdateUserReadOnlyDataRequest);
-}
-
-handlers.CheckNewReferrals = function(args) 
-{
-    var GetUserReadOnlyDataRequest = 
-    {
-        "PlayFabId": currentPlayerId,
-        "Keys": [ PLAYER_REFERRAL_REWARD_KEY ]
-    }; 
-    
-    var GetUserReadOnlyDataResult = server.GetUserReadOnlyData(GetUserReadOnlyDataRequest);
-
-    var referralValues = [];
-    
-    if(GetUserReadOnlyDataResult.Data.hasOwnProperty(PLAYER_REFERRAL_REWARD_KEY))
-    {
-        referralValues = JSON.parse(GetUserReadOnlyDataResult.Data[PLAYER_REFERRAL_REWARD_KEY].Value);
-        
-        return referralValues.length;
-        
-        if(Array.isArray(referralValues))
-        {
-            return {"message":"Referrals was found", "referrals" : referralValues, "reward" : referralValues.length * 1000};
-        }
-        else
-        {
-            return {"message":"Referral value error"};
-        }
-    }
-    
-    return {"message":"No referrals found"};
-}
 
 //////////////////////////////////////////////////////////////////////////////////////////
 //
@@ -495,13 +565,17 @@ function GetUserCurrency(Currency)
 }
 
 
+function AddCurrency(Value, Currency)
+{
+    server.AddUserVirtualCurrency({PlayFabId: currentPlayerId, 
+    VirtualCurrency: Currency, Amount: Value});
+}
+
 function SubstractItemPrice(Value, Currency)
 {
     server.SubtractUserVirtualCurrency({PlayFabId: currentPlayerId, 
     VirtualCurrency: Currency, Amount: Value});
 }
-
-
 
 //////////////////////////////////////////////////////////////////////////////////////////
 //
@@ -561,6 +635,33 @@ handlers.ProcessSpin = function(args)
     return true;
 }
 
+
+handlers.GetRouletteCooldown = function(args)
+{
+    var playerMove = "Spin";
+    var now = Date.now();
+    var playerMoveCooldownInSeconds = SPIN_COOLDOWN_SECONDS;
+
+    var playerData = server.GetUserInternalData({
+        PlayFabId: currentPlayerId,
+        Keys: ["last_move_timestamp"]
+    });
+
+    var lastMoveTimestampSetting = playerData.Data["last_move_timestamp"];
+
+    if (lastMoveTimestampSetting) {
+        var lastMoveTime = Date.parse(lastMoveTimestampSetting.Value);
+        var timeSinceLastMoveInSeconds = (now - lastMoveTime) / 1000;
+        log.debug("lastMoveTime: " + lastMoveTime + " now: " + now + " timeSinceLastMoveInSeconds: " + timeSinceLastMoveInSeconds);
+
+        var cooldown = playerMoveCooldownInSeconds - timeSinceLastMoveInSeconds;
+
+        if(cooldown > 0) return cooldown;
+    }
+
+    return 0.0;
+}
+
 //////////////////////////////////////////////////////////////////////////////////////////
 //
 //  Player data
@@ -575,6 +676,12 @@ var SKIN_START_VALUE = "Material_Chr_01_A";
 
 var DEFAULT_ITEMS_CATALOG = "Character";
 var DEFAULT_ITEMS_PACK = "Default Characters";
+
+var DEFAULT_ITEMS_CATALOG_2 = "Market";
+var DEFAULT_ITEMS_PACK_2 = "Default Character";
+
+var DEFAULT_ITEMS_DATA_KEY = "Items";
+var DEFAULT_ITEMS_DATA_VALUE = "Cool_Male_Hair_01;Cool Male;";
 
 var DISABLE_AD_KEY = "Disable Ads";
 var DISABLE_AD_VALUE_DEFAULT = "false";
@@ -602,12 +709,14 @@ handlers.CreateDefaultPlayerData = function(args)
     };
     
     UpdateUserDataRequest.Data[NEWLY_STATUS_KEY] = NEWLY_STATUS_VALUE;
+    UpdateUserDataRequest.Data[DEFAULT_ITEMS_DATA_KEY] = DEFAULT_ITEMS_DATA_VALUE;
     UpdateUserDataRequest.Data[SKIN_KEY] = SKIN_START_VALUE;
     UpdateUserDataRequest.Data[DISABLE_AD_KEY] = DISABLE_AD_VALUE_DEFAULT;
     
     server.UpdateUserData(UpdateUserDataRequest);
     
-    GrantItems(DEFAULT_ITEMS_PACK, DEFAULT_ITEMS_CATALOG);
+    GrantItems(DEFAULT_ITEMS_PACK, DEFAULT_ITEMS_CATALOG); // delete after update
+    GrantItems(DEFAULT_ITEMS_PACK_2, DEFAULT_ITEMS_CATALOG_2); // rename after update
     
     StartGoldPack();
 }
@@ -692,20 +801,6 @@ handlers.MediumGoldPack = function(args)
 handlers.LargeGoldPack = function(args)
 {
     return GrantItems("Gold Large", "Support");
-}
-
-handlers.DisableAds = function(args)
-{
-    var UpdateUserDataRequest = 
-    {
-        "PlayFabId": currentPlayerId,
-        "Data": {},
-        "Permission": "Public"
-    };
-    
-    UpdateUserDataRequest.Data[DISABLE_AD_KEY] = DISABLE_AD_VALUE_PURCHASED;
-    
-    server.UpdateUserData(UpdateUserDataRequest);
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////
@@ -796,7 +891,7 @@ function GetPlayerDataValue(key)
 
 handlers.BuyInventoryItem = function(args)
 {
-    var success = PayForItem(args.ItemId, args.CatalogVersion, true);
+    var success = PayForItem(args.ItemId, args.CatalogVersion, true, args.CurrencyName);
     
     if(success)
     {
@@ -811,10 +906,10 @@ handlers.BuyInventoryItem = function(args)
 
 handlers.UserCanBuyItem = function(args)
 {
-    return PayForItem(args.ItemId, args.CatalogVersion, true);
+    return PayForItem(args.ItemId, args.CatalogVersion, true, args.CurrencyName);
 }    
     
-function PayForItem(itemId, catalogVersion, substractPrice) 
+function PayForItem(itemId, catalogVersion, substractPrice, currencyName) 
 {
     var GetCatalogItemsResult = server.GetCatalogItems({ CatalogVersion: catalogVersion });
     
@@ -826,18 +921,18 @@ function PayForItem(itemId, catalogVersion, substractPrice)
         
         if(item.ItemId == itemId)
         {
-            itemPrice = item.VirtualCurrencyPrices["GL"];
+            itemPrice = item.VirtualCurrencyPrices[currencyName];
         }
     }
     
     var request = { "InfoRequestParameters": { "GetUserVirtualCurrency": true }, "PlayFabId": currentPlayerId };
-    var currencyAmount = server.GetPlayerCombinedInfo(request).InfoResultPayload.UserVirtualCurrency["GL"];
+    var currencyAmount = server.GetPlayerCombinedInfo(request).InfoResultPayload.UserVirtualCurrency[currencyName];
     
     var success = itemPrice > 0 && currencyAmount >= itemPrice;
     
     if(success && substractPrice)
     {
-        SubstractItemPrice(itemPrice, "GL");
+        SubstractItemPrice(itemPrice, currencyName);
     }
         
     return success;
@@ -867,6 +962,7 @@ handlers.RoomJoined = function (args) {
     server.WriteTitleEvent({
         EventName : "room_joined"
     });
+    
     return { ResultCode : 0, Message: 'Success' };
 };
 
@@ -897,4 +993,148 @@ handlers.RoomEventRaised = function (args) {
     });
     return { ResultCode : 0, Message: 'Success' };
 };
+  
+//////////////////////////////////////////////////////////////////////////////////////////
+//
+//  Ads
+//
+//////////////////////////////////////////////////////////////////////////////////////////  
+
+var AD_WATCH_KEY = "AdWatch";
+var AD_STREAK_KEY = "AdStreak";
+
+handlers.StarStreakRequest = function (args) 
+{
+    UpdateAdWatch(true);
     
+    return "Star streak enable";
+}
+
+handlers.StarStreakCancel = function (args) 
+{
+    UpdateAdWatch(false);
+    
+    return "Star streak cancel";
+}
+
+handlers.StarStreakStep = function (args) 
+{
+    var GetUserReadOnlyDataRequest = 
+    {
+        "PlayFabId": currentPlayerId,
+        "Keys": [ AD_STREAK_KEY ]
+    }; 
+    
+    var GetUserReadOnlyDataResult = server.GetUserReadOnlyData(GetUserReadOnlyDataRequest);
+    
+    if(GetUserReadOnlyDataResult.Data.hasOwnProperty(AD_STREAK_KEY))
+    {
+        var adStreakValue = GetUserReadOnlyDataResult.Data[AD_STREAK_KEY].Value;
+        
+        return parseInt(adStreakValue);
+    }
+    
+    UpdateAdStreak(0);
+        
+    return 0;
+}
+
+handlers.StarStreakResult = function (args) 
+{
+    var GetUserReadOnlyDataRequest = 
+    {
+        "PlayFabId": currentPlayerId,
+        "Keys": [ AD_STREAK_KEY ]
+    }; 
+    
+    var GetUserReadOnlyDataResult = server.GetUserReadOnlyData(GetUserReadOnlyDataRequest);
+    
+    if(GetUserReadOnlyDataResult.Data.hasOwnProperty(AD_STREAK_KEY))
+    {
+        var adStreakValue = GetUserReadOnlyDataResult.Data[AD_STREAK_KEY].Value;
+        
+        UpdateAdWatch(false);
+        
+        var adStreak = parseInt(adStreakValue);
+        
+        adStreak++;
+        
+        if(adStreak === 6)
+        {
+            UpdateAdStreak(1);
+            AddStarReward(1);
+            
+            return 1;
+        }
+        else
+        {
+            UpdateAdStreak(adStreak);
+            AddStarReward(adStreak);
+        
+            return adStreak;
+        }
+    }
+    else
+    {
+        UpdateAdStreak(1);
+        AddStarReward(1);
+        
+        UpdateAdWatch(false);
+        
+        return 1;
+    }
+}
+
+function AddStarReward(streakValue)
+{
+    var rewardAmount = 50 + streakValue * 50;
+        
+    AddCurrency(rewardAmount, VIRTUAL_CURRENCY_CODE);
+}
+
+function UpdateAdStreak(value)
+{
+    var UpdateUserReadOnlyDataRequest = 
+    {
+        "PlayFabId": currentPlayerId,
+        "Data": {}
+    };
+    
+    UpdateUserReadOnlyDataRequest.Data[AD_STREAK_KEY] = value;
+    
+    server.UpdateUserReadOnlyData(UpdateUserReadOnlyDataRequest);
+}
+
+function UpdateAdWatch(state)
+{
+    var UpdateUserReadOnlyDataRequest = 
+    {
+        "PlayFabId": currentPlayerId,
+        "Data": {}
+    };
+    
+    UpdateUserReadOnlyDataRequest.Data[AD_WATCH_KEY] = state;
+    
+    server.UpdateUserReadOnlyData(UpdateUserReadOnlyDataRequest);
+}
+    
+//////////////////////////////////////////////////////////////////////////////////////////
+//
+//  Addressables
+//
+//////////////////////////////////////////////////////////////////////////////////////////  
+
+var ADDRESSABLES_VERSION_KEY = "AddressablesBuildVersion";
+
+handlers.SetAddressablesVersion = function (args) 
+{
+    var UpdateUserReadOnlyDataRequest = 
+    {
+        "PlayFabId": currentPlayerId,
+        "Data": {}
+    };
+    
+    UpdateUserReadOnlyDataRequest.Data[ADDRESSABLES_VERSION_KEY] = args.Version;
+    
+    server.UpdateUserReadOnlyData(UpdateUserReadOnlyDataRequest);
+}
